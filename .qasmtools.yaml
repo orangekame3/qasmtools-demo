@@ -1,0 +1,49 @@
+# QASMTools Configuration
+# This file configures linting rules for qasmtools
+
+# Linting rules configuration
+lint:
+  # Enable all available lint rules
+  rules:
+    - no-unused-qubits
+    - no-unused-bits
+    - proper-spacing
+    - semicolon-required
+    - valid-gate-names
+    - parameter-count-check
+    - qubit-range-check          # Critical: detects out of bounds array access
+    - bit-range-check            # Critical: detects out of bounds bit access
+    - array-bounds-validation    # Validates all array index operations
+    - include-stdgates
+    - consistent-formatting
+    - no-empty-lines
+    - proper-indentation
+    - gate-parameter-spacing
+
+# Formatting configuration
+format:
+  # Indentation settings
+  indent: 2
+  # Line length limit
+  line-length: 80
+  # Spacing around operators
+  operator-spacing: true
+  # Semicolon placement
+  semicolon-style: "required"
+  # Newline handling
+  newline-before-gates: false
+  newline-after-declarations: true
+
+# File patterns to include/exclude
+files:
+  include:
+    - "**/*.qasm"
+  exclude:
+    - "**/*.tmp"
+    - "**/backup_*.qasm"
+
+# Severity levels
+severity:
+  syntax-error: "error"
+  style-warning: "warning"
+  formatting: "info"

@@ -1,0 +1,216 @@
+name: QASMTools CI with ReviewDog
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  qasmtools-lint:
+    name: QASMTools Lint with ReviewDog
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install qasmtools
+      run: |
+        curl -sSfL https://raw.githubusercontent.com/orangekame3/qasmtools/main/install.sh | sh
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+      
+    - name: Setup reviewdog
+      uses: reviewdog/action-setup@v1
+      with:
+        reviewdog_version: latest
+        
+    - name: Run qasmtools lint with reviewdog
+      env:
+        REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        set -e
+        
+        # Find all QASM files
+        find . -name "*.qasm" -type f | while read -r file; do
+          echo "Linting $file"
+          
+          # Run qasmtools lint and capture output
+          if ! qasm lint "$file" 2>&1 | tee /tmp/lint_output.txt; then
+            # Format lint output for reviewdog
+            cat /tmp/lint_output.txt | \
+            sed -E 's/^(.+):([0-9]+):([0-9]+): (.+)$/\1:\2:\3: \4/' | \
+            reviewdog -efm="%f:%l:%c: %m" \
+                     -name="qasmtools-lint" \
+                     -reporter=github-pr-check \
+                     -filter-mode=added \
+                     -fail-on-error=true || true
+          fi
+        done
+        
+    - name: Run qasmtools format check with reviewdog
+      env:
+        REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        set -e
+        
+        # Find all QASM files and check formatting
+        find . -name "*.qasm" -type f | while read -r file; do
+          echo "Checking format for $file"
+          
+          # Create a temporary file for formatted output
+          temp_file=$(mktemp)
+          
+          # Format the file and compare
+          if qasm fmt "$file" > "$temp_file"; then
+            if ! diff -u "$file" "$temp_file" | \
+               reviewdog -name="qasmtools-format" \
+                        -f=diff \
+                        -reporter=github-pr-check \
+                        -filter-mode=added; then
+              echo "Format check failed for $file"
+            fi
+          fi
+          
+          rm -f "$temp_file"
+        done
+
+  qasmtools-dedicated-lint:
+    name: Dedicated QASM Lint Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install qasmtools
+      run: |
+        curl -sSfL https://raw.githubusercontent.com/orangekame3/qasmtools/main/install.sh | sh
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+      
+    - name: Setup reviewdog
+      uses: reviewdog/action-setup@v1
+      with:
+        reviewdog_version: latest
+        
+    - name: Run comprehensive QASM lint
+      env:
+        REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        set -e
+        
+        # Create lint report
+        echo "# QASM Lint Report" > lint_report.md
+        echo "" >> lint_report.md
+        echo "Generated at: $(date)" >> lint_report.md
+        echo "" >> lint_report.md
+        
+        # Track overall status
+        lint_failed=0
+        
+        # Find all QASM files
+        find . -name "*.qasm" -type f | sort | while read -r file; do
+          echo "## Linting: \`$file\`" >> lint_report.md
+          echo "" >> lint_report.md
+          
+          # Run qasmtools lint with verbose output
+          if qasm lint "$file" > /tmp/lint_output.txt 2>&1; then
+            echo "✅ **PASSED** - No lint issues found" >> lint_report.md
+            echo '```' >> lint_report.md
+            cat /tmp/lint_output.txt >> lint_report.md
+            echo '```' >> lint_report.md
+          else
+            echo "❌ **FAILED** - Lint issues detected" >> lint_report.md
+            echo '```' >> lint_report.md
+            cat /tmp/lint_output.txt >> lint_report.md
+            echo '```' >> lint_report.md
+            
+            # Send to reviewdog for PR annotation
+            cat /tmp/lint_output.txt | \
+            sed -E 's/^(.+):([0-9]+):([0-9]+): (.+)$/\1:\2:\3: \4/' | \
+            reviewdog -efm="%f:%l:%c: %m" \
+                     -name="qasmtools-dedicated-lint" \
+                     -reporter=github-pr-review \
+                     -filter-mode=added \
+                     -fail-on-error=false || true
+            
+            lint_failed=1
+          fi
+          
+          echo "" >> lint_report.md
+          echo "---" >> lint_report.md
+          echo "" >> lint_report.md
+        done
+        
+        # Add summary
+        echo "## Summary" >> lint_report.md
+        echo "" >> lint_report.md
+        file_count=$(find . -name "*.qasm" -type f | wc -l)
+        echo "Total files checked: $file_count" >> lint_report.md
+        echo "" >> lint_report.md
+        
+        if [ $lint_failed -eq 0 ]; then
+          echo "🎉 All QASM files passed lint checks!" >> lint_report.md
+        else
+          echo "⚠️  Some QASM files have lint issues. Please review the errors above." >> lint_report.md
+        fi
+        
+    - name: Upload lint report
+      uses: actions/upload-artifact@v4
+      with:
+        name: qasm-lint-report
+        path: lint_report.md
+        
+    - name: Display lint summary
+      run: |
+        echo "=== QASM Lint Summary ==="
+        find . -name "*.qasm" -type f | while read -r file; do
+          echo -n "Checking $file: "
+          if qasm lint "$file" >/dev/null 2>&1; then
+            echo "✅ PASS"
+          else
+            echo "❌ FAIL"
+          fi
+        done
+
+  qasmtools-analysis:
+    name: QASMTools Analysis Report
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install qasmtools
+      run: |
+        curl -sSfL https://raw.githubusercontent.com/orangekame3/qasmtools/main/install.sh | sh
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+      
+    - name: Generate QASM analysis report
+      run: |
+        echo "# QASMTools Analysis Report" > analysis_report.md
+        echo "" >> analysis_report.md
+        echo "## Files Analyzed" >> analysis_report.md
+        echo "" >> analysis_report.md
+        
+        find . -name "*.qasm" -type f | while read -r file; do
+          echo "### $file" >> analysis_report.md
+          echo "" >> analysis_report.md
+          echo "#### Lint Results" >> analysis_report.md
+          echo '```' >> analysis_report.md
+          qasm lint "$file" >> analysis_report.md 2>&1 || true
+          echo '```' >> analysis_report.md
+          echo "" >> analysis_report.md
+          
+          echo "#### Formatted Code" >> analysis_report.md
+          echo '```qasm' >> analysis_report.md
+          qasm fmt "$file" >> analysis_report.md 2>&1 || cat "$file" >> analysis_report.md
+          echo '```' >> analysis_report.md
+          echo "" >> analysis_report.md
+        done
+        
+    - name: Upload analysis report
+      uses: actions/upload-artifact@v4
+      with:
+        name: qasmtools-analysis-report
+        path: analysis_report.md
