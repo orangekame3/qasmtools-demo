@@ -29,39 +29,52 @@ jobs:
       env:
         REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        set -e
+        # Don't exit on error - we want to process all files
+        set +e
         
-        # Find all QASM files
-        find . -name "*.qasm" -type f | while read -r file; do
-          echo "Linting $file"
+        # Only run reviewdog if we're in a PR
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          echo "Running in PR context - reviewdog will be active"
           
-          # Run qasmtools lint and capture output
-          qasm lint "$file" 2>&1 | tee /tmp/lint_output.txt
-          
-          # Always send output to reviewdog (even if lint passes)
-          if [ -s /tmp/lint_output.txt ]; then
-            echo "Lint output file contents:"
-            cat /tmp/lint_output.txt
-            echo "---"
-            echo "Filtering lint output for reviewdog..."
-            filtered_output=$(cat /tmp/lint_output.txt | grep -E '^\./')
-            if [ -n "$filtered_output" ]; then
-              echo "Filtered output:"
-              echo "$filtered_output"
-              echo "Sending to reviewdog..."
-              echo "$filtered_output" | \
-              reviewdog -efm="%f:%l:%c: %m" \
-                       -name="qasmtools-lint" \
-                       -reporter=github-pr-review \
-                       -filter-mode=nofilter \
-                       -fail-on-error=false -v || true
+          # Find all QASM files
+          find . -name "*.qasm" -type f | while read -r file; do
+            echo "Linting $file"
+            
+            # Run qasmtools lint and capture output
+            qasm lint "$file" 2>&1 | tee /tmp/lint_output.txt
+            
+            # Always send output to reviewdog (even if lint passes)
+            if [ -s /tmp/lint_output.txt ]; then
+              echo "Lint output file contents:"
+              cat /tmp/lint_output.txt
+              echo "---"
+              echo "Filtering lint output for reviewdog..."
+              filtered_output=$(cat /tmp/lint_output.txt | grep -E '^\./')
+              if [ -n "$filtered_output" ]; then
+                echo "Filtered output:"
+                echo "$filtered_output"
+                echo "Sending to reviewdog..."
+                echo "$filtered_output" | \
+                reviewdog -efm="%f:%l:%c: %m" \
+                         -name="qasmtools-lint" \
+                         -reporter=github-pr-review \
+                         -filter-mode=nofilter \
+                         -fail-on-error=false -v || echo "ReviewDog failed (this is expected)"
+              else
+                echo "No filtered output found for reviewdog"
+              fi
             else
-              echo "No filtered output found for reviewdog"
+              echo "No lint output file or empty file"
             fi
-          else
-            echo "No lint output file or empty file"
-          fi
-        done
+          done
+        else
+          echo "Not in PR context - skipping reviewdog integration"
+          echo "Running basic lint check..."
+          find . -name "*.qasm" -type f | while read -r file; do
+            echo "Linting $file"
+            qasm lint "$file" || echo "Lint failed for $file"
+          done
+        fi
         
     - name: Run qasmtools format check with reviewdog
       env:
@@ -137,7 +150,8 @@ jobs:
       env:
         REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        set -e
+        # Don't exit on error - we want to collect all results
+        set +e
         
         # Create lint report
         echo "# QASM Lint Report" > lint_report.md
@@ -145,8 +159,11 @@ jobs:
         echo "Generated at: $(date)" >> lint_report.md
         echo "" >> lint_report.md
         
-        # Track overall status
-        lint_failed=0
+        # Track overall status (use temp file to avoid subshell scope issues)
+        echo "0" > /tmp/lint_failed.txt
+        
+        # Collect all lint errors for reviewdog
+        echo "" > /tmp/all_lint_errors.txt
         
         # Find all QASM files
         find . -name "*.qasm" -type f | sort | while read -r file; do
@@ -168,23 +185,32 @@ jobs:
             cat /tmp/lint_output.txt >> lint_report.md
             echo '```' >> lint_report.md
             
-            # Send to reviewdog for PR annotation
-            echo "Sending detailed lint output to reviewdog..."
-            cat /tmp/lint_output.txt | \
-            grep -E '^\./' | \
-            reviewdog -efm="%f:%l:%c: %m" \
-                     -name="qasmtools-dedicated-lint" \
-                     -reporter=github-pr-review \
-                     -filter-mode=nofilter \
-                     -fail-on-error=false || true
+            # Collect errors for reviewdog
+            grep -E '^\./' /tmp/lint_output.txt >> /tmp/all_lint_errors.txt || true
             
-            lint_failed=1
+            # Update failure status
+            echo "1" > /tmp/lint_failed.txt
           fi
           
           echo "" >> lint_report.md
           echo "---" >> lint_report.md
           echo "" >> lint_report.md
         done
+        
+        # Send all collected errors to reviewdog (only if we're in a PR)
+        if [ -s /tmp/all_lint_errors.txt ] && [ "${{ github.event_name }}" = "pull_request" ]; then
+          echo "=== Sending lint errors to reviewdog ==="
+          cat /tmp/all_lint_errors.txt
+          echo "=== End of errors ==="
+          cat /tmp/all_lint_errors.txt | \
+          reviewdog -efm="%f:%l:%c: %m" \
+                   -name="qasmtools-dedicated-lint" \
+                   -reporter=github-pr-review \
+                   -filter-mode=nofilter \
+                   -fail-on-error=false || echo "ReviewDog failed (this is expected on push to main)"
+        else
+          echo "No lint errors found or not in PR context"
+        fi
         
         # Add summary
         echo "## Summary" >> lint_report.md
@@ -193,6 +219,7 @@ jobs:
         echo "Total files checked: $file_count" >> lint_report.md
         echo "" >> lint_report.md
         
+        lint_failed=$(cat /tmp/lint_failed.txt)
         if [ $lint_failed -eq 0 ]; then
           echo "🎉 All QASM files passed lint checks!" >> lint_report.md
         else
