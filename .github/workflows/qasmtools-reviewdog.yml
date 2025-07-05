@@ -36,15 +36,30 @@ jobs:
           echo "Linting $file"
           
           # Run qasmtools lint and capture output
-          if ! qasm lint "$file" 2>&1 | tee /tmp/lint_output.txt; then
-            # Format lint output for reviewdog
-            cat /tmp/lint_output.txt | \
-            sed -E 's/^(.+):([0-9]+):([0-9]+): (.+)$/\1:\2:\3: \4/' | \
-            reviewdog -efm="%f:%l:%c: %m" \
-                     -name="qasmtools-lint" \
-                     -reporter=github-pr-check \
-                     -filter-mode=added \
-                     -fail-on-error=true || true
+          qasm lint "$file" 2>&1 | tee /tmp/lint_output.txt
+          
+          # Always send output to reviewdog (even if lint passes)
+          if [ -s /tmp/lint_output.txt ]; then
+            echo "Lint output file contents:"
+            cat /tmp/lint_output.txt
+            echo "---"
+            echo "Filtering lint output for reviewdog..."
+            filtered_output=$(cat /tmp/lint_output.txt | grep -E '^\./')
+            if [ -n "$filtered_output" ]; then
+              echo "Filtered output:"
+              echo "$filtered_output"
+              echo "Sending to reviewdog..."
+              echo "$filtered_output" | \
+              reviewdog -efm="%f:%l:%c: %m" \
+                       -name="qasmtools-lint" \
+                       -reporter=github-pr-review \
+                       -filter-mode=nofilter \
+                       -fail-on-error=false -v || true
+            else
+              echo "No filtered output found for reviewdog"
+            fi
+          else
+            echo "No lint output file or empty file"
           fi
         done
         
@@ -74,6 +89,31 @@ jobs:
           
           rm -f "$temp_file"
         done
+        
+    - name: Run reviewdog with collected errors
+      env:
+        REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Collect all lint errors into a single file
+        echo "Collecting all lint errors..."
+        find . -name "*.qasm" -type f | while read -r file; do
+          echo "Processing $file for reviewdog..."
+          qasm lint "$file" 2>&1 | grep -E '^\./' || true
+        done > /tmp/all_lint_errors.txt
+        
+        if [ -s /tmp/all_lint_errors.txt ]; then
+          echo "=== All lint errors ==="
+          cat /tmp/all_lint_errors.txt
+          echo "=== Sending to reviewdog ==="
+          cat /tmp/all_lint_errors.txt | \
+          reviewdog -efm="%f:%l:%c: %m" \
+                   -name="qasmtools-collected-lint" \
+                   -reporter=github-pr-review \
+                   -filter-mode=nofilter \
+                   -fail-on-error=false -v || true
+        else
+          echo "No lint errors found"
+        fi
 
   qasmtools-dedicated-lint:
     name: Dedicated QASM Lint Check
@@ -114,7 +154,10 @@ jobs:
           echo "" >> lint_report.md
           
           # Run qasmtools lint with verbose output
-          if qasm lint "$file" > /tmp/lint_output.txt 2>&1; then
+          qasm lint "$file" > /tmp/lint_output.txt 2>&1
+          lint_exit_code=$?
+          
+          if [ $lint_exit_code -eq 0 ]; then
             echo "✅ **PASSED** - No lint issues found" >> lint_report.md
             echo '```' >> lint_report.md
             cat /tmp/lint_output.txt >> lint_report.md
@@ -126,12 +169,13 @@ jobs:
             echo '```' >> lint_report.md
             
             # Send to reviewdog for PR annotation
+            echo "Sending detailed lint output to reviewdog..."
             cat /tmp/lint_output.txt | \
-            sed -E 's/^(.+):([0-9]+):([0-9]+): (.+)$/\1:\2:\3: \4/' | \
+            grep -E '^\./' | \
             reviewdog -efm="%f:%l:%c: %m" \
                      -name="qasmtools-dedicated-lint" \
                      -reporter=github-pr-review \
-                     -filter-mode=added \
+                     -filter-mode=nofilter \
                      -fail-on-error=false || true
             
             lint_failed=1
